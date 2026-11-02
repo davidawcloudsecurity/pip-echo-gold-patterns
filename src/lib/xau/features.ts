@@ -20,8 +20,8 @@ export function wilderAtr(c: Candle[], period = 14): (number | null)[] {
   const out: (number | null)[] = new Array(c.length).fill(null);
   let atr = 0;
   for (let i = 0; i < c.length; i++) {
-    const tr = i === 0 ? c[i].high - c[i].low
-      : Math.max(c[i].high - c[i].low, Math.abs(c[i].high - c[i - 1].close), Math.abs(c[i].low - c[i - 1].close));
+    const tr = i === 0 ? c[i]!.high - c[i]!.low
+      : Math.max(c[i]!.high - c[i]!.low, Math.abs(c[i]!.high - c[i - 1]!.close), Math.abs(c[i]!.low - c[i - 1]!.close));
     if (i < period) { atr += tr; if (i === period - 1) { atr /= period; out[i] = atr; } }
     else { atr = (atr * (period - 1) + tr) / period; out[i] = atr; }
   }

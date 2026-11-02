@@ -35,7 +35,7 @@ export function parseOhlcCsv(text: string, expectedStepMs?: number): LoadReport 
   const invalidRows: LoadReport["invalidRows"] = [];
   if (lines.length === 0) return { candles: [], totalRows: 0, invalidRows, duplicates: 0, gaps: [] };
 
-  const header = lines[0].toLowerCase().split(/[,;\t]/).map((h) => h.trim().replace(/"/g, ""));
+  const header = lines[0]!.toLowerCase().split(/[,;\t]/).map((h) => h.trim().replace(/"/g, ""));
   const idx = (names: string[]) => header.findIndex((h) => names.includes(h));
   const iT = idx(["timestamp", "time", "date", "datetime"]);
   const iO = idx(["open", "o"]);
@@ -49,9 +49,9 @@ export function parseOhlcCsv(text: string, expectedStepMs?: number): LoadReport 
   const map = new Map<number, Candle>();
   let duplicates = 0;
   for (let n = 1; n < lines.length; n++) {
-    const cols = lines[n].split(/[,;\t]/);
+    const cols = lines[n]!.split(/[,;\t]/);
     const t = parseTimestamp(cols[iT] ?? "");
-    const [open, high, low, close] = [iO, iH, iL, iC].map((i) => Number((cols[i] ?? "").trim()));
+    const [open, high, low, close] = [iO, iH, iL, iC].map((i) => Number((cols[i] ?? "").trim())) as [number, number, number, number];
     let reason = "";
     if (t === null) reason = "bad timestamp";
     else if ([open, high, low, close].some((v) => !Number.isFinite(v) || v <= 0)) reason = "non-numeric or non-positive price";
@@ -65,11 +65,11 @@ export function parseOhlcCsv(text: string, expectedStepMs?: number): LoadReport 
   const gaps: LoadReport["gaps"] = [];
   if (expectedStepMs) {
     for (let i = 1; i < candles.length; i++) {
-      const diff = candles[i].t - candles[i - 1].t;
+      const diff = candles[i]!.t - candles[i - 1]!.t;
       // For daily data, allow weekends (up to 3 days) without flagging.
       const tolerance = expectedStepMs === DAY_MS ? 3 * DAY_MS : expectedStepMs;
       if (diff > tolerance) {
-        gaps.push({ from: candles[i - 1].t, to: candles[i].t, missingDays: Math.round(diff / DAY_MS) - 1 });
+        gaps.push({ from: candles[i - 1]!.t, to: candles[i]!.t, missingDays: Math.round(diff / DAY_MS) - 1 });
       }
     }
   }
@@ -82,6 +82,6 @@ export const HOUR_MS = 3_600_000;
 /** Drop the final candle if it may still be forming (its period has not ended yet). */
 export function dropIncomplete(candles: Candle[], stepMs: number, now = Date.now()): Candle[] {
   if (!candles.length) return candles;
-  const last = candles[candles.length - 1];
+  const last = candles[candles.length - 1]!;
   return last.t + stepMs > now ? candles.slice(0, -1) : candles;
 }
