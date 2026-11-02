@@ -31,7 +31,7 @@ function Upload({ label, onLoad, report }: { label: string; onLoad: (text: strin
       {report && (
         <div className="mt-3 space-y-1 font-mono text-xs text-muted-foreground">
           <div><span className="text-foreground">{report.candles.length}</span> valid candles of {report.totalRows} rows</div>
-          {report.candles.length > 0 && <div>{fmtDate(report.candles[0].t)} → {fmtDate(report.candles[report.candles.length - 1].t)} (UTC)</div>}
+          {report.candles.length > 0 && <div>{fmtDate(report.candles[0]!.t)} → {fmtDate(report.candles[report.candles.length - 1]!.t)} (UTC)</div>}
           <div>Invalid rows: <span className={report.invalidRows.length ? "text-bear" : ""}>{report.invalidRows.length}</span> · Duplicates: {report.duplicates} · Gaps: {report.gaps.length}</div>
           {report.invalidRows.slice(0, 3).map((r) => <div key={r.line} className="text-bear">line {r.line}: {r.reason}</div>)}
         </div>
@@ -60,7 +60,7 @@ function Index() {
 
   const setNum = (i: number, key: keyof PatternConfig[number], v: string) => {
     const next = cfg.map((r) => ({ ...r })) as PatternConfig;
-    (next[i] as Record<string, unknown>)[key] = v === "" ? undefined : Number(v);
+    (next[i] as unknown as Record<string, unknown>)[key] = v === "" ? undefined : Number(v);
     setCfg(next);
   };
 
@@ -106,7 +106,7 @@ function Index() {
             <h2 className="mb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">Latest three completed daily candles</h2>
             <div className="grid gap-4 md:grid-cols-3">
               {analysis.last3.map((f, i) => {
-                const checks = checkCandle(f, cfg[i]);
+                const checks = checkCandle(f, cfg[i]!);
                 return (
                   <div key={f.t} className="rounded-md border border-border bg-card p-4 font-mono text-xs">
                     <div className="mb-2 flex justify-between"><span className="text-foreground">{fmtDate(f.t)}</span><span className={f.direction === "bull" ? "text-bull" : "text-bear"}>{f.direction}</span></div>
@@ -130,7 +130,7 @@ function Index() {
             <div className="font-mono text-xs uppercase tracking-widest text-muted-foreground">Historical occurrences (rule-based, non-overlapping, with completed 4th candle)</div>
             <div className="mt-2 text-4xl font-semibold text-primary">{analysis.occ.length}</div>
             <div className="mt-3 flex flex-wrap gap-2 font-mono text-xs">
-              {analysis.occ.slice(-30).map((i) => <span key={i} className="rounded bg-secondary px-2 py-1">{fmtDate(analysis.f[i - 2].t)} → {fmtDate(analysis.f[i].t)}</span>)}
+              {analysis.occ.slice(-30).map((i) => <span key={i} className="rounded bg-secondary px-2 py-1">{fmtDate(analysis.f[i - 2]!.t)} → {fmtDate(analysis.f[i]!.t)}</span>)}
             </div>
             <p className="mt-4 text-xs text-muted-foreground">Similarity ranking, charts and 4th-day outcomes come in the next stage.</p>
           </section>

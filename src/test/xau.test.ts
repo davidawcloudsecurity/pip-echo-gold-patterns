@@ -21,13 +21,13 @@ function withPattern(): Candle[] {
 describe("data loading", () => {
   it("interprets timestamps without offset as UTC and honours explicit offsets", () => {
     const r = parseOhlcCsv("timestamp,open,high,low,close\n2024-01-02,1,2,0.5,1.5\n2024-01-03T00:00:00+08:00,1,2,0.5,1.5");
-    expect(r.candles[0].t).toBe(Date.UTC(2024, 0, 2));
-    expect(r.candles[1].t).toBe(Date.UTC(2024, 0, 2, 16));
+    expect(r.candles[0]!.t).toBe(Date.UTC(2024, 0, 2));
+    expect(r.candles[1]!.t).toBe(Date.UTC(2024, 0, 2, 16));
   });
   it("rejects rows where high is below close", () => {
     const r = parseOhlcCsv("timestamp,open,high,low,close\n2024-01-02,1,1.2,0.5,1.5");
     expect(r.candles).toHaveLength(0);
-    expect(r.invalidRows[0].reason).toMatch(/inconsistent/);
+    expect(r.invalidRows[0]!.reason).toMatch(/inconsistent/);
   });
   it("flags gaps longer than a weekend in daily data", () => {
     const r = parseOhlcCsv("timestamp,open,high,low,close\n2024-01-01,1,2,0.5,1.5\n2024-01-10,1,2,0.5,1.5", DAY_MS);
@@ -42,7 +42,7 @@ describe("data loading", () => {
 describe("features", () => {
   it("computes body ratio and uses ATR from prior candles only", () => {
     const f = computeFeatures(withPattern());
-    const big = f[20];
+    const big = f[20]!;
     expect(big.bodyRatio).toBeCloseTo(18 / 20);
     expect(big.atr).toBeCloseTo(10); // ATR before the big candle is unaffected by it
   });
@@ -56,7 +56,7 @@ describe("pattern detection", () => {
   });
   it("does not let the 4th candle change detection", () => {
     const c = withPattern();
-    c[23] = { ...c[23], open: 2005, high: 2006, low: 1900, close: 1901 };
+    c[23] = { ...c[23]!, open: 2005, high: 2006, low: 1900, close: 1901 };
     expect(matchesAt(computeFeatures(c), 22, DEFAULT_PATTERN)).toBe(true);
   });
   it("excludes an occurrence with no completed 4th candle when outcome is required", () => {

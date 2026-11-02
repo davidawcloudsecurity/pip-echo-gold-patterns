@@ -35,7 +35,7 @@ export function computeFeatures(c: Candle[], atrPeriod = 14): CandleFeatures[] {
     const range = k.high - k.low;
     const upperWick = k.high - Math.max(k.open, k.close);
     const lowerWick = Math.min(k.open, k.close) - k.low;
-    const prevAtr = i > 0 ? atr[i - 1] : null;
+    const prevAtr = i > 0 ? (atr[i - 1] ?? null) : null;
     const safe = (v: number) => (range > 0 ? v / range : 0);
     return {
       ...k,

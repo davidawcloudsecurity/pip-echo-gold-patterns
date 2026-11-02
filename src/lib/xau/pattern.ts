@@ -31,7 +31,7 @@ export function checkCandle(f: CandleFeatures, r: CandleRule): RuleCheck[] {
 
 export function matchesAt(f: CandleFeatures[], end: number, cfg: PatternConfig): boolean {
   if (end < 2) return false;
-  return [0, 1, 2].every((k) => checkCandle(f[end - 2 + k], cfg[k]).every((c) => c.pass));
+  return [0, 1, 2].every((k) => checkCandle(f[end - 2 + k]!, cfg[k]!).every((c) => c.pass));
 }
 
 /**
@@ -44,7 +44,7 @@ export function findOccurrences(f: CandleFeatures[], cfg: PatternConfig, require
   const out: number[] = [];
   const last = requireOutcome ? f.length - 2 : f.length - 1;
   for (let i = 2; i <= last; i++) {
-    if (out.length && i - out[out.length - 1] < 3) continue;
+    if (out.length && i - out[out.length - 1]! < 3) continue;
     if (matchesAt(f, i, cfg)) out.push(i);
   }
   return out;
