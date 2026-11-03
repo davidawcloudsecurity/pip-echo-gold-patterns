@@ -2,7 +2,9 @@
 
 ## What changes
 
-Replace the CSV-first, fixed three-candle workflow with a chart screenshot workspace for **XAUUSD Daily**. Keep the uploaded chart visible beside market interpretation, evidence-backed scenarios and real historical comparisons. Hourly charts provide supporting intraday evidence.
+Replace the CSV-first, fixed three-candle workflow with a chart screenshot workspace for **XAUUSD Daily and 1-hour screenshots**. Keep the uploaded chart visible beside market interpretation, evidence-backed scenarios and real historical comparisons. The primary output is **two or three supported next-session hourly scenario panels**, combining Daily structure with hourly context.
+
+Each panel shows the preceding 24 hours of actual hourly candles followed by a shaded historical scenario range for the next trading session, separated by a dashed session boundary. The range represents normalized historical hourly paths, not invented future candles or an exact-price forecast. The September 3 → September 4, 2026 example describes the intended workflow; August 11 and August 18 are illustrative candidate dates until verified against actual data.
 
 The existing app has CSV validation, candle features, prior-candle ATR and fixed-pattern detection. It has no image interpretation, market-data connection, historical similarity search, chart rendering or scenario statistics. Its nine existing tests pass.
 
@@ -14,13 +16,13 @@ The existing app has CSV validation, candle features, prior-candle ATR and fixed
 
 ## Revised architecture
 
-1. **Screenshot processing:** image upload, validation, preview, replacement and explicit analysis action. Default to XAUUSD Daily; show detected instrument/timeframe and request correction only when ambiguous. Do not retain personal screenshots by default.
+1. **Screenshot processing:** image upload, validation, preview, replacement and explicit analysis action. Accept XAUUSD Daily or 1-hour screenshots; show detected instrument/timeframe and request correction only when ambiguous. Do not retain personal screenshots by default.
 2. **Vision interpretation:** Lovable AI reads surrounding price action, visible candles, zones and annotations. Separate visible observations from interpretation and uncertainty. Unreadable prices, dates and indicators remain unknown.
 3. **Historical data:** connect a provider with genuine spot XAUUSD Daily and hourly OHLC coverage. Verify availability, access, licensing, session boundaries and timezone before choosing the feed. Cache validated candles and provenance in Lovable Cloud. Do not substitute gold futures or another instrument silently.
-4. **Query formation:** use visible dates and instrument to retrieve the actual current OHLC window. Ask for the chart's final completed date or broker/feed when needed. A screenshot's visually estimated prices are not authoritative OHLC data. If the source window cannot be reliably aligned, keep the interpretation but withhold numerical similarity results and probabilities.
-5. **Historical matching:** deterministic candle, trend, consolidation, breakout, zone-distance and volatility features, plus normalized price-sequence similarity and constrained DTW. Match using only information available at each candidate's formation date.
-6. **Outcomes and scenarios:** measure subsequent moves over explicit horizons, calculate outcome frequencies and directional excursions, and group already-selected matches by observed outcome. AI explains these measured results; it cannot invent or alter them.
-7. **Charts and reporting:** render actual historical candles, highlight the formation, distinguish the future window, and show dates, relevant levels, favourable/adverse excursions and final outcomes. Retrieve the corresponding hourly session for selected Daily matches.
+4. **Query formation:** use visible dates and instrument to retrieve the actual current Daily and hourly OHLC windows, ending at an explicit analysis cutoff. Ask for the chart's final completed date or broker/feed when needed. A screenshot's visually estimated prices are not authoritative OHLC data. If the source window cannot be reliably aligned, keep the interpretation but withhold numerical similarity results and probabilities. Never fetch the target session's realized candles into the scenario calculation, including when analysing a past date.
+5. **Historical matching:** deterministic candle, trend, consolidation, breakout, zone-distance and volatility features, plus normalized price-sequence similarity and constrained DTW. Jointly compare Daily structure and pre-cutoff hourly paths, including accelerating bullish candles, V-reversals and position relative to relevant moving averages when present. Match using only information available at each candidate's formation date.
+6. **Outcomes and scenarios:** measure each already-selected match's following trading session using actual hourly candles, calculate bullish/bearish/sideways outcome frequencies and directional excursions, and group by observed outcome. AI explains these measured results; it cannot invent or alter them.
+7. **Charts and reporting:** render actual historical candles, highlight the formation, distinguish the outcome window, and show dates, relevant levels, favourable/adverse excursions and final outcomes. Alongside these comparisons, render next-session hourly panels with the actual prior-24-hour context, dashed session boundary, verified support/resistance and relevant MA reference levels, and shaded normalized historical high/low ranges. Label ranges as historical evidence, not forecasts; never render fabricated future candles.
 
 ## Staged implementation
 
@@ -29,25 +31,29 @@ The existing app has CSV validation, candle features, prior-candle ATR and fixed
 - Enable Lovable Cloud for server-side AI and historical-data storage.
 - Build the screenshot-first workspace, image preview and analysis states.
 - Add vision interpretation of structure, trend, momentum, formations, zones and current market condition.
+- Support Daily and hourly screenshot interpretation and establish the analysis cutoff and next trading session.
 - Preserve the screenshot when analysis fails; expose unclear-image, unsupported-chart and insufficient-evidence states.
 - Verify upload and interpretation before adding the matching pipeline.
 
 ### Stage 2 — First end-to-end evidence milestone
 
-- Connect and validate real Daily data; show feed name, coverage and last completed candle.
+- Connect and validate real Daily and hourly data; show feed name, coverage and last completed candle. Hourly evidence is required for the primary next-session scenario output, not deferred as an optional enhancement.
 - Align the uploaded screenshot with a real completed OHLC window.
-- Implement contextual descriptors and similarity ranking with no future information in the ranking.
+- Implement joint Daily/hourly contextual descriptors and similarity ranking with no future information in the ranking.
 - Deduplicate overlapping historical formations and exclude the query window and candidates whose outcome would not yet be known at the query date.
 - Render up to three closest examples per observed outcome, where available, using genuine prices. Matching thresholds and ranking stay independent of future outcome labels.
 - Show bullish continuation, bearish reversal and sideways/alternative groups only where supported; otherwise explain the missing evidence.
-- **Acceptance:** upload screenshot → interpret market structure → retrieve similar formations → display real historical charts and their subsequent movement.
+- Build two or three next-session hourly panels where supported: actual prior-24-hour context followed by historical shaded ranges and measured outcome-group frequencies. Preserve gaps and label insufficient hourly coverage instead of filling prices.
+- **Acceptance:** upload Daily or hourly screenshot → interpret joint market structure → retrieve similar formations → display real historical examples and next-session hourly historical scenario ranges.
 
 ### Stage 3 — Statistics and hourly evidence
 
-- Define and disclose horizon and outcome-classification thresholds before calculating frequencies; initially report 1-, 3- and 5-completed-session results.
+- Define and disclose next-session hourly outcome-classification thresholds before calculating frequencies; the next trading session is the primary horizon. Any longer-horizon analysis is secondary, not a replacement for the requested next-day view.
 - Report sample size, counts, measured percentages, favourable/adverse movement and drawdown with clear direction and reference-level definitions.
 - Label small samples as descriptive historical frequencies, not reliable predictive probabilities; show uncertainty and excluded/missing outcomes.
 - Retrieve each example's corresponding hourly session using the provider's Daily session boundaries, not a guessed UTC day. Label missing hourly coverage rather than synthesizing candles.
+- Normalize each matched next-session hourly sequence to its formation-end price and pre-cutoff volatility, then re-anchor to the query's verified price and pre-cutoff volatility. Calculate the average normalized path and mean normalized high/low envelope per outcome group; show the envelope as a shaded descriptive historical range, not a confidence interval or guaranteed bound. Disclose the normalization and aggregation method and count valid observations at each hourly slot; do not interpolate missing bars.
+- Render verified key levels as horizontal references. A moving average is calculated from genuine pre-cutoff candles using a known type and period; do not invent indicator settings or a future MA path. Withhold unreadable/unverified levels.
 
 ### Stage 4 — Conditional trading analysis
 
@@ -68,6 +74,7 @@ The existing app has CSV validation, candle features, prior-candle ATR and fixed
 ## Verification and dependencies
 
 - Keep existing candle/ATR regression tests and add tests for future-independent ranking, overlapping-match exclusion, exact outcome counts, horizon completion, directional excursions, stop/target arithmetic and risk/reward.
+- Add tests for joint Daily/hourly matching, exact normalization and re-anchoring, hourly envelope aggregation, missing-bar exclusion and session-boundary alignment. Verify that changing the target session's realized candles cannot change a past-cutoff scenario panel.
 - Test invalid images, unreadable screenshots, date/feed mismatch, unavailable historical data and incomplete hourly coverage.
 - Verify the central flow in the browser with actual image input, real AI output and actual historical candle charts; check screenshot preview, comparison charts and narrow-screen layout.
 - Only the requirements document is present so far; the **two referenced XAUUSD screenshots still need to be uploaded** for the requested acceptance tests.
