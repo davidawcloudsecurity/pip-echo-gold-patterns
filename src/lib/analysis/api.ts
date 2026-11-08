@@ -1,15 +1,12 @@
 /**
- * Server function: analyseChart
+ * Server function: fetchHistoricalAnalysis
  *
- * 1. Calls OpenRouter vision LLM to interpret the chart screenshot.
- * 2. Fetches XAU/USD Daily + hourly OHLC from Twelve Data.
- * 3. Runs DTW similarity search to find historical matches.
- * 4. Measures outcomes for each match.
- * 5. Summarises into bull/bear/sideways scenarios.
- * 6. Builds 1-hour projection envelopes.
- * 7. Returns everything to the client.
+ * Fetches XAU/USD Daily + hourly OHLC from Twelve Data, runs DTW
+ * similarity search, measures outcomes, builds scenarios and projections.
+ * Does NOT call any vision LLM — chart interpretation is handled separately
+ * by interpretChart in interpretation.functions.ts.
  *
- * API keys are read from process.env and never sent to the browser.
+ * TWELVEDATA_API_KEY must be set in .env.
  */
 
 import { createServerFn } from "@tanstack/react-start";
@@ -20,7 +17,6 @@ import { findTopMatches } from "./dtw";
 import { measureOutcomes, summariseOutcomes } from "./outcomes";
 import { buildScenarios } from "./scenarios";
 import { buildProjection } from "./projection";
-import { CHART_ANALYSIS_PROMPT, parseInterpretation, type ChartInterpretation } from "./vision";
 import type { Candle } from "../xau/data";
 import type { MatchOutcome, OutcomeSummary, OutcomeDirection } from "./outcomes";
 import type { Scenario } from "./scenarios";
@@ -30,20 +26,25 @@ import type { ScenarioProjection } from "./projection";
 // Input / output types
 // ---------------------------------------------------------------------------
 
-const AnalyseInput = z.object({
-  imageDataUrl: z.string().min(10),
-  instrument: z.string().default("XAUUSD"),
-  timeframe: z.string().default("1D"),
+const HistoricalInput = z.object({
+  /**
+   * How many recent daily candles to use as the query window.
+   * Comes from the vision LLM's lookbackCandles estimate, or defaults to 20.
+   */
+  lookbackCandles: z.number().int().min(5).max(40).default(20),
+  /** Trend hint from vision interpretation — used in scenario descriptions. */
+  trend: z.enum(["bullish", "bearish", "sideways", "unclear"]).default("unclear"),
+  supportLevels: z.array(z.number()).default([]),
+  resistanceLevels: z.array(z.number()).default([]),
 });
 
-export type AnalyseInput = z.infer<typeof AnalyseInput>;
+export type HistoricalInput = z.infer<typeof HistoricalInput>;
 
 export interface EnrichedMatch extends MatchOutcome {
   hourlyCandles: Candle[];
 }
 
-export interface AnalyseResult {
-  interpretation: ChartInterpretation;
+export interface HistoricalResult {
   scenarios: Scenario[];
   summary: OutcomeSummary;
   topMatches: EnrichedMatch[];
@@ -57,69 +58,15 @@ export interface AnalyseResult {
 }
 
 // ---------------------------------------------------------------------------
-// Vision LLM call via OpenRouter
-// ---------------------------------------------------------------------------
-
-async function callVisionLlm(imageDataUrl: string): Promise<ChartInterpretation> {
-  const apiKey = process.env["OPENROUTER_API_KEY"];
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is not set. Add it to your .env file.");
-  }
-
-  const body = {
-    model: "openai/gpt-4o",
-    max_tokens: 1024,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: CHART_ANALYSIS_PROMPT },
-          { type: "image_url", image_url: { url: imageDataUrl, detail: "high" } },
-        ],
-      },
-    ],
-  };
-
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://pipecho.app",
-      "X-Title": "PipEcho Chart Analysis",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`OpenRouter API error ${res.status}: ${text.slice(0, 300)}`);
-  }
-
-  interface OpenRouterResponse {
-    choices: Array<{ message: { content: string } }>;
-  }
-  const json = (await res.json()) as OpenRouterResponse;
-  const content = json.choices[0]?.message.content ?? "";
-  return parseInterpretation(content);
-}
-
-// ---------------------------------------------------------------------------
 // Server function
 // ---------------------------------------------------------------------------
 
-export const analyseChart = createServerFn({ method: "POST" })
-  .validator(AnalyseInput)
-  .handler(async ({ data }): Promise<AnalyseResult> => {
+export const fetchHistoricalAnalysis = createServerFn({ method: "POST" })
+  .validator(HistoricalInput)
+  .handler(async ({ data }): Promise<HistoricalResult> => {
     const warnings: string[] = [];
-    const { imageDataUrl } = data;
 
-    // 1 — Vision LLM
-    const interpretation = await callVisionLlm(imageDataUrl);
-
-    const emptyResult = (extraWarnings: string[]): AnalyseResult => ({
-      interpretation,
+    const emptyResult = (extraWarnings: string[]): HistoricalResult => ({
       scenarios: [],
       summary: {
         totalMatches: 0,
@@ -142,11 +89,7 @@ export const analyseChart = createServerFn({ method: "POST" })
       warnings: [...warnings, ...extraWarnings],
     });
 
-    if (!interpretation.readable) {
-      return emptyResult([interpretation.unreadableReason ?? "Chart could not be read"]);
-    }
-
-    // 2 — Fetch OHLC history from Twelve Data
+    // 1 — Fetch OHLC history from Twelve Data
     let dailyCandles: Candle[] = [];
     try {
       dailyCandles = await fetchDailyCandles(undefined, 7300);
@@ -165,15 +108,15 @@ export const analyseChart = createServerFn({ method: "POST" })
       return emptyResult(["Insufficient historical data for reliable pattern matching."]);
     }
 
-    // 3 — Feature extraction
+    // 2 — Feature extraction
     const allFeatures = computeFeatures(dailyCandles);
 
-    // 4 — Build query window from the LLM's lookback estimate
-    const windowLen = Math.max(10, Math.min(40, interpretation.lookbackCandles));
+    // 3 — Build query window from the provided lookback estimate
+    const windowLen = Math.max(10, Math.min(40, data.lookbackCandles));
     const queryStart = Math.max(0, allFeatures.length - windowLen);
     const queryFeatures = allFeatures.slice(queryStart);
 
-    // 5 — DTW similarity search
+    // 4 — DTW similarity search
     const horizonDays = 10;
     const rawMatches = findTopMatches(queryFeatures, allFeatures, {
       topN: 30,
@@ -181,18 +124,28 @@ export const analyseChart = createServerFn({ method: "POST" })
       minOutcomeCandles: horizonDays,
     });
 
-    // 6 — Measure outcomes
+    // 5 — Measure outcomes
     const outcomes = measureOutcomes(rawMatches, dailyCandles, {
       horizonDays,
       contextDays: 20,
       windowLen,
     });
 
-    // 7 — Summarise
+    // 6 — Summarise
     const summary = summariseOutcomes(outcomes, horizonDays, 3);
 
+    // 7 — Build a minimal interpretation proxy for scenario descriptions
+    const interpProxy = {
+      trend: data.trend === "bullish" ? "bullish" as const
+        : data.trend === "bearish" ? "bearish" as const
+        : data.trend === "sideways" ? "sideways" as const
+        : "unclear" as const,
+      supportLevels: data.supportLevels,
+      resistanceLevels: data.resistanceLevels,
+    };
+
     // 8 — Scenarios
-    const scenarios = buildScenarios(summary, interpretation);
+    const scenarios = buildScenarios(summary, interpProxy as Parameters<typeof buildScenarios>[1]);
 
     // 9 — Enrich top matches with hourly candles
     const allTopMatches = [
@@ -219,7 +172,6 @@ export const analyseChart = createServerFn({ method: "POST" })
     };
 
     return {
-      interpretation,
       scenarios,
       summary,
       topMatches,

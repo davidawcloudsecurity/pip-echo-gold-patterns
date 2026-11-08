@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ChartReportView } from "@/components/chart-report";
 import { interpretChart } from "@/lib/xau/interpretation.functions";
 import { imageInputSchema, type ChartReport, type ImageInput } from "@/lib/xau/interpretation";
-import { analyseChart, type AnalyseResult } from "@/lib/analysis/api";
+import { fetchHistoricalAnalysis, type HistoricalResult } from "@/lib/analysis/api";
 
 export const Route = createFileRoute("/")({
   head: () => ({ meta: [
@@ -31,7 +31,7 @@ const readImage = (file: File) => new Promise<string>((resolve, reject) => {
 function Index() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [report, setReport] = useState<ChartReport | null>(null);
-  const [analysis, setAnalysis] = useState<AnalyseResult | null>(null);
+  const [analysis, setAnalysis] = useState<HistoricalResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState(false);
@@ -41,7 +41,7 @@ function Index() {
   const [feed, setFeed] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const analyze = useServerFn(interpretChart);
-  const analyse = useServerFn(analyseChart);
+  const analyse = useServerFn(fetchHistoricalAnalysis);
 
   async function upload(files: File[]) {
     if (busy || reading) return;
@@ -69,15 +69,22 @@ function Index() {
     setBusy(true); setReport(null); setAnalysis(null); setError("");
     try {
       const result = await analyze({ data: { images: images.map((image) => image.dataUrl), timeframe, cutoff, feed } });
-      if (result.report) setReport(result.report); else setError(result.error);
-      // Run historical analysis in parallel using the first image
-      if (images[0]) {
+      if (result.report) {
+        setReport(result.report);
+        // Run historical analysis using the lookback and levels from the chart report
         try {
-          const hist = await analyse({ data: { imageDataUrl: images[0].dataUrl } });
+          const hist = await analyse({ data: {
+            lookbackCandles: 20,
+            trend: "unclear",
+            supportLevels: [],
+            resistanceLevels: [],
+          }});
           setAnalysis(hist);
         } catch {
-          // Non-fatal — chart interpretation may still succeed
+          // Non-fatal
         }
+      } else {
+        setError(result.error);
       }
     } catch { setError("Analysis could not finish. Your screenshots are still here; please try again when the service is available."); }
     finally { setBusy(false); }
