@@ -11,3 +11,5 @@
 
 - XAUUSD analysis logic lives in pure TS modules under src/lib/xau (data, features, pattern) and runs in the browser — keeps it testable and free of backend needs.
 - ATR used for candle i is computed from candles before i only — prevents look-ahead bias.
+- Screenshot interpretation runs through a server function; image validation and report schemas stay client-safe, while numerical XAU logic remains pure TypeScript — keeps prompts private and measured evidence independent of AI.
+- Do not persist uploaded screenshots or seed fictional chart data; unresolved market-provider access leaves historical outputs withheld — preserves evidence integrity.
