@@ -1,3 +1,12 @@
+# Env files — secrets, never commit
+.env
+.env.origin
+.env.local
+.env.*.local
+
+# Lock files — keep only one (package-lock.json is tracked)
+bun.lock
+
 # Logs
 logs
 *.log
