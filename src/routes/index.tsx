@@ -1,141 +1,125 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { parseOhlcCsv, dropIncomplete, DAY_MS, HOUR_MS, type LoadReport } from "@/lib/xau/data";
-import { computeFeatures } from "@/lib/xau/features";
-import { DEFAULT_PATTERN, checkCandle, findOccurrences, type PatternConfig } from "@/lib/xau/pattern";
+import { useServerFn } from "@tanstack/react-start";
+import { useRef, useState } from "react";
+import { ArrowRight, ChartNoAxesCombined, ImagePlus, LoaderCircle, LockKeyhole, ScanLine, Trash2, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ChartReportView } from "@/components/chart-report";
+import { interpretChart } from "@/lib/xau/interpretation.functions";
+import { imageInputSchema, type ChartReport, type ImageInput } from "@/lib/xau/interpretation";
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "XAUUSD Pattern Matcher — Historical candlestick research" },
-      { name: "description", content: "Find historical XAUUSD three-candle daily patterns and study the following day." },
-      { property: "og:title", content: "XAUUSD Pattern Matcher" },
-      { property: "og:description", content: "Historical candlestick pattern research for gold. Not a trading system." },
-    ],
-  }),
+  head: () => ({ meta: [
+    { title: "XAUUSD Chart Research — Screenshot analysis" },
+    { name: "description", content: "Interpret gold Daily and hourly chart screenshots with visible evidence, market structure and explicit uncertainty." },
+    { property: "og:title", content: "XAUUSD Chart Research" },
+    { property: "og:description", content: "Screenshot-first gold chart interpretation. Historical scenarios require verified market data." },
+    { property: "og:type", content: "website" },
+    { name: "twitter:card", content: "summary_large_image" },
+  ] }),
   component: Index,
 });
 
-const fmtDate = (t: number) => new Date(t).toISOString().slice(0, 10);
-
-function Upload({ label, onLoad, report }: { label: string; onLoad: (text: string) => void; report: LoadReport | null }) {
-  return (
-    <div className="rounded-md border border-border bg-card p-4">
-      <div className="mb-2 font-mono text-xs uppercase tracking-widest text-muted-foreground">{label}</div>
-      <input
-        type="file"
-        accept=".csv,text/csv"
-        className="block w-full text-sm file:mr-3 file:rounded file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-primary-foreground"
-        onChange={async (e) => { const f = e.target.files?.[0]; if (f) onLoad(await f.text()); }}
-      />
-      {report && (
-        <div className="mt-3 space-y-1 font-mono text-xs text-muted-foreground">
-          <div><span className="text-foreground">{report.candles.length}</span> valid candles of {report.totalRows} rows</div>
-          {report.candles.length > 0 && <div>{fmtDate(report.candles[0]!.t)} → {fmtDate(report.candles[report.candles.length - 1]!.t)} (UTC)</div>}
-          <div>Invalid rows: <span className={report.invalidRows.length ? "text-bear" : ""}>{report.invalidRows.length}</span> · Duplicates: {report.duplicates} · Gaps: {report.gaps.length}</div>
-          {report.invalidRows.slice(0, 3).map((r) => <div key={r.line} className="text-bear">line {r.line}: {r.reason}</div>)}
-        </div>
-      )}
-    </div>
-  );
-}
+type UploadedImage = { name: string; dataUrl: string };
+const readImage = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Image could not be read."));
+  reader.onerror = () => reject(new Error("Image could not be read."));
+  reader.readAsDataURL(file);
+});
 
 function Index() {
-  const [daily, setDaily] = useState<LoadReport | null>(null);
-  const [hourly, setHourly] = useState<LoadReport | null>(null);
+  const [images, setImages] = useState<UploadedImage[]>([]);
+  const [report, setReport] = useState<ChartReport | null>(null);
   const [error, setError] = useState("");
-  const [cfg, setCfg] = useState<PatternConfig>(DEFAULT_PATTERN);
+  const [busy, setBusy] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [timeframe, setTimeframe] = useState<ImageInput["timeframe"]>("auto");
+  const [cutoff, setCutoff] = useState("");
+  const [feed, setFeed] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const analyze = useServerFn(interpretChart);
 
-  const load = (step: number, set: (r: LoadReport) => void) => (text: string) => {
-    try { setError(""); const r = parseOhlcCsv(text, step); set({ ...r, candles: dropIncomplete(r.candles, step) }); }
-    catch (e) { setError((e as Error).message); }
-  };
+  async function upload(files: File[]) {
+    if (busy || reading) return;
+    setError(""); setReading(true);
+    try {
+      if (!files.length) return;
+      if (files.length + images.length > 2) throw new Error("Keep up to two charts: one Daily and one hourly. Remove a chart to replace it.");
+      const next: UploadedImage[] = [];
+      for (const file of files) {
+        if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error("Choose a PNG, JPEG or WebP screenshot.");
+        if (file.size > 8 * 1024 * 1024) throw new Error("Each screenshot must be 8 MB or smaller.");
+        const dataUrl = await readImage(file);
+        imageInputSchema.parse({ images: [dataUrl], timeframe: "auto", cutoff: "", feed: "" });
+        const img = new Image(); img.src = dataUrl;
+        await img.decode().catch(() => { throw new Error("This image could not be opened. Choose a different screenshot."); });
+        next.push({ name: file.name, dataUrl });
+      }
+      setImages((previous) => [...previous, ...next]); setReport(null);
+    } catch (e) { setError(e instanceof Error ? e.message : "Screenshot could not be loaded."); }
+    finally { setReading(false); if (fileInput.current) fileInput.current.value = ""; }
+  }
 
-  const analysis = useMemo(() => {
-    if (!daily || daily.candles.length < 20) return null;
-    const f = computeFeatures(daily.candles);
-    const last3 = f.slice(-3);
-    return { f, last3, occ: findOccurrences(f, cfg) };
-  }, [daily, cfg]);
+  async function submit() {
+    if (!images.length || busy || reading) return;
+    setBusy(true); setReport(null); setError("");
+    try {
+      const result = await analyze({ data: { images: images.map((image) => image.dataUrl), timeframe, cutoff, feed } });
+      if (result.report) setReport(result.report); else setError(result.error);
+    } catch { setError("Analysis could not finish. Your screenshots are still here; please try again when the service is available."); }
+    finally { setBusy(false); }
+  }
 
-  const setNum = (i: number, key: keyof PatternConfig[number], v: string) => {
-    const next = cfg.map((r) => ({ ...r })) as PatternConfig;
-    (next[i] as unknown as Record<string, unknown>)[key] = v === "" ? undefined : Number(v);
-    setCfg(next);
-  };
-
-  return (
-    <main className="mx-auto max-w-6xl px-6 py-10">
-      <header className="mb-8 border-b border-border pb-6">
-        <div className="font-mono text-xs uppercase tracking-[0.3em] text-primary">XAU / USD · Research</div>
-        <h1 className="mt-2 text-3xl font-semibold">Historical Candlestick Pattern Matcher</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Stage 1–2: data loading & pattern detection. Historical research only — no buy/sell signals.</p>
-      </header>
-
-      <section className="grid gap-4 md:grid-cols-2">
-        <Upload label="Daily CSV" onLoad={load(DAY_MS, setDaily)} report={daily} />
-        <Upload label="1-Hour CSV" onLoad={load(HOUR_MS, setHourly)} report={hourly} />
-      </section>
-      <p className="mt-2 font-mono text-xs text-muted-foreground">Columns: timestamp, open, high, low, close. Timestamps without an offset are read as UTC. A still-forming last candle is dropped.</p>
-      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-
-      <section className="mt-10">
-        <h2 className="mb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">Pattern rules (editable)</h2>
-        <div className="grid gap-4 md:grid-cols-3">
-          {cfg.map((r, i) => (
-            <div key={i} className="rounded-md border border-border bg-card p-4 text-sm">
-              <div className={`mb-3 font-mono font-semibold ${r.direction === "bull" ? "text-bull" : "text-bear"}`}>Candle {i + 1} · {r.direction === "bull" ? "Bullish" : "Bearish"}</div>
-              {(["minBodyRatio", "maxBodyRatio", "minBodyAtr", "maxBodyAtr"] as const).map((k) => (
-                <label key={k} className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">{{ minBodyRatio: "Body/range ≥", maxBodyRatio: "Body/range ≤", minBodyAtr: "Body ≥ ATR×", maxBodyAtr: "Body ≤ ATR×" }[k]}</span>
-                  <input type="number" step="0.05" value={r[k] ?? ""} placeholder="—" onChange={(e) => setNum(i, k, e.target.value)}
-                    className="w-20 rounded border border-input bg-background px-2 py-1 text-right font-mono" />
-                </label>
-              ))}
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {!daily && <p className="mt-10 text-center text-muted-foreground">Upload your Daily CSV to begin.</p>}
-      {daily && !analysis && <p className="mt-10 text-center text-muted-foreground">Need at least 20 valid daily candles.</p>}
-
-      {analysis && (
-        <>
-          <section className="mt-10">
-            <h2 className="mb-3 font-mono text-xs uppercase tracking-widest text-muted-foreground">Latest three completed daily candles</h2>
-            <div className="grid gap-4 md:grid-cols-3">
-              {analysis.last3.map((f, i) => {
-                const checks = checkCandle(f, cfg[i]!);
-                return (
-                  <div key={f.t} className="rounded-md border border-border bg-card p-4 font-mono text-xs">
-                    <div className="mb-2 flex justify-between"><span className="text-foreground">{fmtDate(f.t)}</span><span className={f.direction === "bull" ? "text-bull" : "text-bear"}>{f.direction}</span></div>
-                    <div className="grid grid-cols-2 gap-y-1 text-muted-foreground">
-                      <span>O/H/L/C</span><span className="text-right text-foreground">{f.open.toFixed(2)} / {f.high.toFixed(2)} / {f.low.toFixed(2)} / {f.close.toFixed(2)}</span>
-                      <span>Body / Range</span><span className="text-right">{f.body.toFixed(2)} / {f.range.toFixed(2)}</span>
-                      <span>Upper / Lower wick</span><span className="text-right">{f.upperWickRatio.toFixed(2)} / {f.lowerWickRatio.toFixed(2)}</span>
-                      <span>Prior ATR(14)</span><span className="text-right">{f.atr?.toFixed(2) ?? "n/a"}</span>
-                      <span>Range / ATR</span><span className="text-right">{f.rangeAtr?.toFixed(2) ?? "n/a"}</span>
-                    </div>
-                    <div className="mt-3 space-y-1 border-t border-border pt-2">
-                      {checks.map((c) => <div key={c.label} className={c.pass ? "text-bull" : "text-bear"}>{c.pass ? "✓" : "✗"} {c.label} <span className="text-muted-foreground">({c.value})</span></div>)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          <section className="mt-10 rounded-md border border-border bg-card p-6">
-            <div className="font-mono text-xs uppercase tracking-widest text-muted-foreground">Historical occurrences (rule-based, non-overlapping, with completed 4th candle)</div>
-            <div className="mt-2 text-4xl font-semibold text-primary">{analysis.occ.length}</div>
-            <div className="mt-3 flex flex-wrap gap-2 font-mono text-xs">
-              {analysis.occ.slice(-30).map((i) => <span key={i} className="rounded bg-secondary px-2 py-1">{fmtDate(analysis.f[i - 2]!.t)} → {fmtDate(analysis.f[i]!.t)}</span>)}
-            </div>
-            <p className="mt-4 text-xs text-muted-foreground">Similarity ranking, charts and 4th-day outcomes come in the next stage.</p>
-          </section>
-        </>
-      )}
+  return <div className="min-h-screen">
+    <header className="border-b border-border">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-5 md:px-8">
+        <div className="flex items-center gap-3"><ChartNoAxesCombined className="size-6 text-primary" /><span className="font-semibold">GOLD / RESEARCH</span></div>
+        <span className="font-mono text-xs text-muted-foreground">XAUUSD · SPOT GOLD</span>
+      </div>
+    </header>
+    <main className="mx-auto max-w-7xl px-5 py-8 md:px-8">
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div><div className="mb-3 font-mono text-xs uppercase tracking-widest text-primary">Chart workspace</div><h1 className="text-3xl font-semibold">XAUUSD Chart Research</h1><p className="mt-3 text-sm text-muted-foreground">Daily structure. Hourly context. Evidence before conviction.</p></div>
+        <div className="flex items-center gap-2 font-mono text-xs text-muted-foreground"><span className="size-1.5 rounded-full bg-primary" />SCREENSHOT INTERPRETATION</div>
+      </div>
+      <div className="grid gap-8 lg:grid-cols-[1.15fr_1fr]">
+        <section className="min-w-0">
+          <div className="mb-4 flex items-center justify-between"><h2 className="font-mono text-xs uppercase tracking-widest">01 / Your charts</h2><span className="text-xs text-muted-foreground">{images.length} / 2 screenshots</span></div>
+          <input ref={fileInput} type="file" multiple accept="image/png,image/jpeg,image/webp" aria-label="Upload chart screenshots" className="sr-only" disabled={busy || reading} onChange={(e) => void upload(Array.from(e.target.files ?? []))} />
+          {images.length === 0 ? <div className={`flex min-h-80 flex-col items-center justify-center rounded-md border border-dashed px-6 py-10 text-center transition-colors ${dragging ? "border-primary bg-accent" : "border-border bg-card"}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); void upload(Array.from(e.dataTransfer.files)); }}>
+            <ImagePlus className="mb-5 size-10 text-primary" strokeWidth={1} />
+            <h3 className="text-lg font-medium">Your gold chart, in focus</h3>
+            <p className="mb-6 mt-2 text-sm text-muted-foreground">XAUUSD · Daily or 1-hour</p>
+            <Button onClick={() => fileInput.current?.click()} disabled={reading}><Upload />{reading ? "Opening screenshot…" : "Choose screenshots"}</Button>
+            <p className="mt-4 font-mono text-xs text-muted-foreground">PNG, JPEG, WEBP · UP TO 8 MB EACH</p>
+          </div> : <div className="space-y-4">
+            {images.map((image, i) => <figure key={image.dataUrl} className="overflow-hidden rounded-md border border-border bg-card">
+              <img src={image.dataUrl} alt={`Uploaded trading chart: ${image.name}`} className="max-h-[520px] w-full object-contain" />
+              <figcaption className="flex items-center justify-between gap-3 border-t border-border px-4 py-2"><span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{image.name}</span><Button variant="ghost" size="icon" title="Remove screenshot" aria-label={`Remove screenshot ${i + 1}`} disabled={busy || reading} onClick={() => { setImages((current) => current.filter((_, index) => index !== i)); setReport(null); setError(""); }}><Trash2 /></Button></figcaption>
+            </figure>)}
+            {images.length < 2 && <Button variant="outline" className="w-full" disabled={busy || reading} onClick={() => fileInput.current?.click()}><ImagePlus />Add Daily / hourly context</Button>}
+          </div>}
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <label className="text-xs text-muted-foreground">Timeframe<select aria-label="Timeframe" value={timeframe} disabled={busy} onChange={(e) => { const value = imageInputSchema.shape.timeframe.parse(e.target.value); setTimeframe(value); setReport(null); }} className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"><option value="auto">Detect from screenshot</option><option value="Daily">Daily</option><option value="1-hour">1-hour</option><option value="Daily + 1-hour">Daily + 1-hour</option></select></label>
+            <label className="text-xs text-muted-foreground">Final completed date · optional<input type="date" aria-label="Final completed date" value={cutoff} disabled={busy} onChange={(e) => { setCutoff(e.target.value); setReport(null); }} className="mt-2 h-10 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm text-foreground" /></label>
+            <label className="text-xs text-muted-foreground sm:col-span-2">Broker / price feed · optional<input aria-label="Broker or price feed" value={feed} maxLength={120} placeholder="As shown on your chart" disabled={busy} onChange={(e) => { setFeed(e.target.value); setReport(null); }} className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground" /></label>
+          </div>
+          <Button className="mt-5 h-11 w-full" disabled={!images.length || busy || reading} onClick={() => void submit()}>{busy ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <ScanLine />}{busy ? "Reading chart structure…" : "Analyse chart"}{!busy && <ArrowRight />}</Button>
+          {error && <p role="alert" className="mt-4 break-words text-sm text-destructive">{error}</p>}
+          <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"><LockKeyhole className="size-3.5 shrink-0" />Screenshots are sent for AI interpretation, not saved to report history.</p>
+        </section>
+        <section className="min-w-0 lg:border-l lg:border-border lg:pl-8">
+          <h2 className="mb-5 font-mono text-xs uppercase tracking-widest">02 / Market reading</h2>
+          {report ? <ChartReportView report={report} /> : <div className="flex min-h-64 flex-col items-center justify-center border-y border-border px-5 py-10 text-center">
+            {busy ? <LoaderCircle className="mb-5 size-7 animate-spin text-primary motion-reduce:animate-none" /> : <ScanLine className="mb-5 size-7 text-muted-foreground" strokeWidth={1} />}
+            <h3 className="font-medium">{busy ? "Examining the visible evidence" : "Awaiting your chart"}</h3>
+            <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">{busy ? "Structure, momentum, formations and visible zones." : "No market interpretation yet."}</p>
+          </div>}
+          <section className="mt-7 border-t border-border pt-5"><div className="mb-3 flex items-center justify-between gap-3"><h3 className="font-mono text-xs uppercase tracking-widest">Historical evidence</h3><span className="text-xs text-muted-foreground">Not connected</span></div><p className="text-sm leading-relaxed text-muted-foreground">Verified Daily and hourly prices are not available yet. Historical matches, next-session ranges, frequencies and numerical trade levels are withheld.</p></section>
+        </section>
+      </div>
+      <footer className="mt-10 flex flex-wrap justify-between gap-3 border-t border-border pt-5 font-mono text-xs text-muted-foreground"><span>CHART OBSERVATIONS ≠ VERIFIED MARKET DATA</span><span>Research only · Not financial advice</span></footer>
     </main>
-  );
+  </div>;
 }
