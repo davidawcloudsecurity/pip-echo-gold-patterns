@@ -37,7 +37,7 @@ For volume explain tick/proxy nature, no centralized spot-gold exchange volume; 
         console.error("Chart interpretation failed", { code: error.code, status: error.httpStatus, outcome: error.outcome, ids: error.ids });
         if (error.code === "payment_required") return { report: null, error: "AI analysis needs available workspace credits. Your screenshots are still here." };
         if (error.code === "permission_denied") return { report: null, error: "Workspace settings do not allow this AI analysis. The owner must restore access before another attempt." };
-        if (error.code === "rate_limit") return { report: null, error: "AI analysis is busy. Please wait before trying again. Your screenshots are still here." };
+        if (error.code === "rate_limited") return { report: null, error: "AI analysis is busy. Please wait before trying again. Your screenshots are still here." };
         return { report: null, error: "AI analysis could not finish; the request may have started. Your screenshots are preserved. No automatic retry was made by the app." };
       }
       console.error("Invalid chart interpretation response");
