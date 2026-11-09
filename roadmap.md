@@ -8,3 +8,4 @@
 - [ ] Display actual Daily comparisons and corresponding hourly sessions. Blocked on genuine historical data and matches.
 - [ ] Add evidence-backed scenario statistics and conditional trading calculations. Blocked on measured historical outcomes and verified prices.
 - [ ] Test the full workflow with the two requested screenshots (not present in this upload).
+- [ ] Review the supplied market-reading sample and replace text-heavy results with concise visual evidence and conditional buy/sell areas; numerical levels remain blocked on verified prices.
