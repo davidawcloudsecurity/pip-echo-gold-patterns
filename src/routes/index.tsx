@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { ArrowRight, ChartNoAxesCombined, ImagePlus, LoaderCircle, LockKeyhole, ScanLine, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChartReportView } from "@/components/chart-report";
+import { HistoricalEvidenceView } from "@/components/historical-evidence";
 import { interpretChart } from "@/lib/xau/interpretation.functions";
 import { imageInputSchema, type ChartReport, type ImageInput } from "@/lib/xau/interpretation";
 import { fetchHistoricalAnalysis, type HistoricalResult } from "@/lib/analysis/api";
