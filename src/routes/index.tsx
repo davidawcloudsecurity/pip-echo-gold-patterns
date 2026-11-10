@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { ArrowRight, ChartNoAxesCombined, ImagePlus, LoaderCircle, LockKeyhole, ScanLine, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChartReportView } from "@/components/chart-report";
+import { HistoricalEvidenceView } from "@/components/historical-evidence";
 import { interpretChart } from "@/lib/xau/interpretation.functions";
 import { imageInputSchema, type ChartReport, type ImageInput } from "@/lib/xau/interpretation";
 import { fetchHistoricalAnalysis, type HistoricalResult } from "@/lib/analysis/api";
@@ -67,27 +68,19 @@ function Index() {
   async function submit() {
     if (!images.length || busy || reading) return;
     setBusy(true); setReport(null); setAnalysis(null); setError("");
-    try {
-      const result = await analyze({ data: { images: images.map((image) => image.dataUrl), timeframe, cutoff, feed } });
-      if (result.report) {
-        setReport(result.report);
-        // Run historical analysis using the lookback and levels from the chart report
-        try {
-          const hist = await analyse({ data: {
-            lookbackCandles: 20,
-            trend: "unclear",
-            supportLevels: [],
-            resistanceLevels: [],
-          }});
-          setAnalysis(hist);
-        } catch {
-          // Non-fatal
-        }
-      } else {
-        setError(result.error);
-      }
-    } catch { setError("Analysis could not finish. Your screenshots are still here; please try again when the service is available."); }
-    finally { setBusy(false); }
+    const [vision, historical] = await Promise.allSettled([
+      analyze({ data: { images: images.map((image) => image.dataUrl), timeframe, cutoff, feed } }),
+      analyse({ data: { lookbackCandles: 20, trend: "unclear", supportLevels: [], resistanceLevels: [], cutoff } }),
+    ]);
+    if (vision.status === "fulfilled") {
+      if (vision.value.report) setReport(vision.value.report);
+      else setError(vision.value.error);
+    } else {
+      setError("AI chart reading could not finish. Real-price evidence can still appear below; your screenshots are still here.");
+    }
+    if (historical.status === "fulfilled") setAnalysis(historical.value);
+    else setError("The analysis could not finish. Your screenshots are still here; please retry when the services are available.");
+    setBusy(false);
   }
 
   return <div className="min-h-screen">
@@ -124,7 +117,7 @@ function Index() {
             <label className="text-xs text-muted-foreground">Final completed date · optional<input type="date" aria-label="Final completed date" value={cutoff} disabled={busy} onChange={(e) => { setCutoff(e.target.value); setReport(null); }} className="mt-2 h-10 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm text-foreground" /></label>
             <label className="text-xs text-muted-foreground sm:col-span-2">Broker / price feed · optional<input aria-label="Broker or price feed" value={feed} maxLength={120} placeholder="As shown on your chart" disabled={busy} onChange={(e) => { setFeed(e.target.value); setReport(null); }} className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground" /></label>
           </div>
-          <Button className="mt-5 h-11 w-full" disabled={!images.length || busy || reading} onClick={() => void submit()}>{busy ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <ScanLine />}{busy ? "Reading chart structure…" : "Analyse chart"}{!busy && <ArrowRight />}</Button>
+          <Button className="mt-5 h-11 w-full" disabled={!images.length || busy || reading} onClick={() => void submit()}>{busy ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <ScanLine />}{busy ? "Reading chart + verifying prices…" : "Analyse chart"}{!busy && <ArrowRight />}</Button>
           {error && <p role="alert" className="mt-4 break-words text-sm text-destructive">{error}</p>}
           <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"><LockKeyhole className="size-3.5 shrink-0" />Screenshots are sent for AI interpretation, not saved to report history.</p>
         </section>
@@ -135,7 +128,7 @@ function Index() {
             <h3 className="font-medium">{busy ? "Examining the visible evidence" : "Awaiting your chart"}</h3>
             <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">{busy ? "Structure, momentum, formations and visible zones." : "No market interpretation yet."}</p>
           </div>}
-          <section className="mt-7 border-t border-border pt-5"><div className="mb-3 flex items-center justify-between gap-3"><h3 className="font-mono text-xs uppercase tracking-widest">Historical evidence</h3><span className={`text-xs ${analysis ? "text-primary" : "text-muted-foreground"}`}>{analysis ? "Connected" : "Not connected"}</span></div>{analysis ? (<div className="space-y-4"><p className="text-sm leading-relaxed text-muted-foreground">{analysis.summary.totalMatches > 0 ? `${analysis.summary.totalMatches} historical matches found across ${analysis.dailyCandles.length} daily candles.` : "No close historical matches found for this pattern."}</p>{analysis.summary.totalMatches > 0 && (<div className="grid grid-cols-3 gap-2">{(["bull","bear","sideways"] as const).map((dir) => { const s = analysis.summary[dir]; return s.count > 0 ? (<div key={dir} className="rounded-md border border-border bg-card p-3"><div className="mb-1 font-mono text-xs uppercase text-muted-foreground">{dir}</div><div className="text-lg font-semibold">{s.pct.toFixed(0)}%</div><div className="text-xs text-muted-foreground">{s.count} matches</div></div>) : null; })}</div>)}{analysis.scenarios.map((sc) => (<div key={sc.direction} className="rounded-md border border-border bg-card p-3"><div className="mb-1 font-semibold text-sm">{sc.title}</div><p className="text-xs leading-relaxed text-muted-foreground">{sc.description}</p></div>))}{analysis.warnings.length > 0 && (<div className="space-y-1">{analysis.warnings.map((w, i) => (<p key={i} className="text-xs text-muted-foreground">{w}</p>))}</div>)}</div>) : (<p className="text-sm leading-relaxed text-muted-foreground">Verified Daily and hourly prices are not available yet. Historical matches, next-session ranges, frequencies and numerical trade levels are withheld.</p>)}</section>
+          <section className="mt-7 border-t border-border pt-5"><div className="mb-3 flex items-center justify-between gap-3"><h3 className="font-mono text-xs uppercase tracking-widest">Real-price evidence</h3><span className={`text-xs ${analysis?.status === "ok" ? "text-bull" : "text-muted-foreground"}`}>{analysis?.status === "ok" ? "Verified feed" : busy ? "Checking prices" : "Not run"}</span></div>{analysis ? <HistoricalEvidenceView analysis={analysis} /> : <p className="text-sm leading-relaxed text-muted-foreground">Upload a chart and analyse it to retrieve completed Daily and hourly candles, measured historical matches and next-session ranges. AI credits are not required for this numerical evidence.</p>}</section>
         </section>
       </div>
       <footer className="mt-10 flex flex-wrap justify-between gap-3 border-t border-border pt-5 font-mono text-xs text-muted-foreground"><span>CHART OBSERVATIONS ≠ VERIFIED MARKET DATA</span><span>Research only · Not financial advice</span></footer>

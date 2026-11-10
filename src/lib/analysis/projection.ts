@@ -1,20 +1,14 @@
-/**
- * Scenario projection builder.
- *
- * For each match, takes the hourly candles following the pattern end,
- * normalises prices relative to the pattern's closing price, and
- * aggregates into a projected high/low range per hour offset.
- */
-
-import type { Candle } from "../xau/data";
+import { HOUR_MS, type Candle } from "../xau/data";
 import type { MatchOutcome, OutcomeDirection } from "./outcomes";
 
 export interface ProjectionSlot {
   hourOffset: number;
-  avgHigh: number; // normalised %
-  avgLow: number; // normalised %
-  minLow: number; // normalised %
-  maxHigh: number; // normalised %
+  avgHigh: number; // normalised % from formation close
+  avgLow: number;
+  avgClose: number;
+  minLow: number;
+  maxHigh: number;
+  observations: number;
 }
 
 export interface ScenarioProjection {
@@ -24,47 +18,46 @@ export interface ScenarioProjection {
 }
 
 /**
- * Build a 1-hour projection envelope from the hourly candles of enriched
- * matches. Prices are normalised to percentage change from each match's
- * entry price so different historical periods are comparable.
+ * Aggregate actual next-session hourly bars into a normalized descriptive
+ * envelope. Offsets come from timestamps, so a missing bar leaves an empty
+ * slot rather than being interpolated or shifted into the wrong hour.
  */
 export function buildProjection(
   matches: Array<MatchOutcome & { hourlyCandles: Candle[] }>,
   direction: OutcomeDirection,
 ): ScenarioProjection {
-  if (!matches.length) {
-    return { direction, slots: [], matchCount: 0 };
-  }
-
-  // Collect normalised high/low at each hour offset across all matches
-  const slotData = new Map<number, { highs: number[]; lows: number[] }>();
+  const slotData = new Map<number, { highs: number[]; lows: number[]; closes: number[] }>();
+  let matchCount = 0;
 
   for (const match of matches) {
-    if (!match.hourlyCandles.length) continue;
-    const entryPrice = match.hourlyCandles[0]!.open;
-    if (entryPrice <= 0) continue;
-
-    for (let i = 0; i < match.hourlyCandles.length; i++) {
-      const c = match.hourlyCandles[i]!;
-      const offset = i;
-      if (!slotData.has(offset)) slotData.set(offset, { highs: [], lows: [] });
+    if (!match.hourlyCandles.length || match.entryPrice <= 0) continue;
+    let validBars = 0;
+    for (const candle of match.hourlyCandles) {
+      const offset = Math.round((candle.t - match.outcomeStartMs) / HOUR_MS);
+      if (offset < 0 || offset > 23) continue;
+      if (!slotData.has(offset)) slotData.set(offset, { highs: [], lows: [], closes: [] });
       const slot = slotData.get(offset)!;
-      slot.highs.push(((c.high - entryPrice) / entryPrice) * 100);
-      slot.lows.push(((c.low - entryPrice) / entryPrice) * 100);
+      slot.highs.push(((candle.high - match.entryPrice) / match.entryPrice) * 100);
+      slot.lows.push(((candle.low - match.entryPrice) / match.entryPrice) * 100);
+      slot.closes.push(((candle.close - match.entryPrice) / match.entryPrice) * 100);
+      validBars++;
     }
+    if (validBars > 0) matchCount++;
   }
 
   const slots: ProjectionSlot[] = [];
   for (const [offset, data] of [...slotData.entries()].sort((a, b) => a[0] - b[0])) {
-    if (!data.highs.length) continue;
+    const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
     slots.push({
       hourOffset: offset,
-      avgHigh: data.highs.reduce((s, v) => s + v, 0) / data.highs.length,
-      avgLow: data.lows.reduce((s, v) => s + v, 0) / data.lows.length,
+      avgHigh: average(data.highs),
+      avgLow: average(data.lows),
+      avgClose: average(data.closes),
       minLow: Math.min(...data.lows),
       maxHigh: Math.max(...data.highs),
+      observations: data.highs.length,
     });
   }
 
-  return { direction, slots, matchCount: matches.length };
+  return { direction, slots, matchCount };
 }

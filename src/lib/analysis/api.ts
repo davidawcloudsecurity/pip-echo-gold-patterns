@@ -1,186 +1,228 @@
-/**
- * Server function: fetchHistoricalAnalysis
- *
- * Fetches XAU/USD Daily + hourly OHLC from Twelve Data, runs DTW
- * similarity search, measures outcomes, builds scenarios and projections.
- * Does NOT call any vision LLM — chart interpretation is handled separately
- * by interpretChart in interpretation.functions.ts.
- *
- * TWELVEDATA_API_KEY must be set in .env.
- */
-
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { fetchDailyCandles, fetchHourlyCandles, sliceHourly } from "../xau/loader";
+import { DAY_MS, HOUR_MS, dropIncomplete, type Candle } from "../xau/data";
+import { fetchDailyCandles, fetchHourlyCandles } from "../xau/loader";
 import { computeFeatures } from "../xau/features";
 import { findTopMatches } from "./dtw";
-import { measureOutcomes, summariseOutcomes } from "./outcomes";
-import { buildScenarios } from "./scenarios";
-import { buildProjection } from "./projection";
-import type { Candle } from "../xau/data";
-import type { MatchOutcome, OutcomeSummary, OutcomeDirection } from "./outcomes";
-import type { Scenario } from "./scenarios";
-import type { ScenarioProjection } from "./projection";
-
-// ---------------------------------------------------------------------------
-// Input / output types
-// ---------------------------------------------------------------------------
+import { alignDailySession, sessionWindow } from "./sessions";
+import { deduplicateJointMatches, rankJointMatches, type JointCandidate } from "./joint";
+import { measureOutcomes, summariseOutcomes, type MatchOutcome, type OutcomeDirection, type OutcomeSummary } from "./outcomes";
+import { buildProjection, type ScenarioProjection } from "./projection";
+import { buildScenarios, type Scenario } from "./scenarios";
 
 const HistoricalInput = z.object({
-  /**
-   * How many recent daily candles to use as the query window.
-   * Comes from the vision LLM's lookbackCandles estimate, or defaults to 20.
-   */
-  lookbackCandles: z.number().int().min(5).max(40).default(20),
-  /** Trend hint from vision interpretation — used in scenario descriptions. */
+  lookbackCandles: z.number().int().min(10).max(40).default(20),
   trend: z.enum(["bullish", "bearish", "sideways", "unclear"]).default("unclear"),
   supportLevels: z.array(z.number()).default([]),
   resistanceLevels: z.array(z.number()).default([]),
+  cutoff: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal("")).default(""),
 });
 
 export type HistoricalInput = z.infer<typeof HistoricalInput>;
 
 export interface EnrichedMatch extends MatchOutcome {
   hourlyCandles: Candle[];
+  contextHourlyCandles: Candle[];
+  patternCandles: Candle[];
+  outcomeCandle: Candle;
+  sessionStartHourUtc: number;
+}
+
+export interface FeedProvenance {
+  provider: "Twelve Data";
+  symbol: "XAU/USD";
+  dailyCount: number;
+  hourlyCount: number;
+  dailyFirstMs: number;
+  dailyLastMs: number;
+  hourlyFirstMs: number;
+  hourlyLastMs: number;
+  sessionNote: string;
+}
+
+export interface VerifiedLevels {
+  support: number[];
+  resistance: number[];
+  sma20: number | null;
 }
 
 export interface HistoricalResult {
+  status: "ok" | "insufficient" | "unavailable";
   scenarios: Scenario[];
   summary: OutcomeSummary;
   topMatches: EnrichedMatch[];
   projections: Record<OutcomeDirection, ScenarioProjection>;
   currentEntryPrice: number;
+  queryDateMs: number;
   projectedDayStartMs: number;
+  projectedSessionStartMs: number;
   dailyCandles: Candle[];
   hourlyCandles: Candle[];
+  verifiedLevels: VerifiedLevels;
+  feed: FeedProvenance;
   analysedAt: string;
   warnings: string[];
 }
 
-// ---------------------------------------------------------------------------
-// Server function
-// ---------------------------------------------------------------------------
+const emptySummary = (): OutcomeSummary => ({
+  totalMatches: 0,
+  horizonDays: 1,
+  bull: { direction: "bull", count: 0, pct: 0, avgMfe: 0, avgMae: 0, avgNetMovePct: 0, maxMfe: 0, maxMae: 0, topMatches: [] },
+  bear: { direction: "bear", count: 0, pct: 0, avgMfe: 0, avgMae: 0, avgNetMovePct: 0, maxMfe: 0, maxMae: 0, topMatches: [] },
+  sideways: { direction: "sideways", count: 0, pct: 0, avgMfe: 0, avgMae: 0, avgNetMovePct: 0, maxMfe: 0, maxMae: 0, topMatches: [] },
+});
+
+const emptyProjections = (): Record<OutcomeDirection, ScenarioProjection> => ({
+  bull: { direction: "bull", slots: [], matchCount: 0 },
+  bear: { direction: "bear", slots: [], matchCount: 0 },
+  sideways: { direction: "sideways", slots: [], matchCount: 0 },
+});
 
 export const fetchHistoricalAnalysis = createServerFn({ method: "POST" })
-  .validator(HistoricalInput)
+  .inputValidator(HistoricalInput)
   .handler(async ({ data }): Promise<HistoricalResult> => {
     const warnings: string[] = [];
-
-    const emptyResult = (extraWarnings: string[]): HistoricalResult => ({
+    const emptyResult = (status: HistoricalResult["status"], messages: string[]): HistoricalResult => ({
+      status,
       scenarios: [],
-      summary: {
-        totalMatches: 0,
-        horizonDays: 10,
-        bull: { direction: "bull", count: 0, pct: 0, avgMfe: 0, avgMae: 0, avgNetMovePct: 0, maxMfe: 0, maxMae: 0, topMatches: [] },
-        bear: { direction: "bear", count: 0, pct: 0, avgMfe: 0, avgMae: 0, avgNetMovePct: 0, maxMfe: 0, maxMae: 0, topMatches: [] },
-        sideways: { direction: "sideways", count: 0, pct: 0, avgMfe: 0, avgMae: 0, avgNetMovePct: 0, maxMfe: 0, maxMae: 0, topMatches: [] },
-      },
+      summary: emptySummary(),
       topMatches: [],
-      projections: {
-        bull: { direction: "bull", slots: [], matchCount: 0 },
-        bear: { direction: "bear", slots: [], matchCount: 0 },
-        sideways: { direction: "sideways", slots: [], matchCount: 0 },
-      },
+      projections: emptyProjections(),
       currentEntryPrice: 0,
+      queryDateMs: 0,
       projectedDayStartMs: 0,
+      projectedSessionStartMs: 0,
       dailyCandles: [],
       hourlyCandles: [],
+      verifiedLevels: { support: [], resistance: [], sma20: null },
+      feed: { provider: "Twelve Data", symbol: "XAU/USD", dailyCount: 0, hourlyCount: 0, dailyFirstMs: 0, dailyLastMs: 0, hourlyFirstMs: 0, hourlyLastMs: 0, sessionNote: "" },
       analysedAt: new Date().toISOString(),
-      warnings: [...warnings, ...extraWarnings],
+      warnings: [...warnings, ...messages],
     });
 
-    // 1 — Fetch OHLC history from Twelve Data
-    let dailyCandles: Candle[] = [];
-    try {
-      dailyCandles = await fetchDailyCandles(undefined, 7300);
-    } catch (e) {
-      warnings.push(`Daily data unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    const [dailyResponse, hourlyResponse] = await Promise.allSettled([
+      fetchDailyCandles(undefined, 7300),
+      fetchHourlyCandles(undefined, 400),
+    ]);
+    if (dailyResponse.status === "rejected") warnings.push("Daily prices could not be retrieved. Please retry after the feed rate limit clears.");
+    if (hourlyResponse.status === "rejected") warnings.push("Hourly prices could not be retrieved. Please retry after the feed rate limit clears.");
+    if (dailyResponse.status === "rejected" || hourlyResponse.status === "rejected") {
+      return emptyResult("unavailable", ["No numerical scenarios are shown without both genuine Daily and hourly data."]);
     }
 
-    let hourlyCandles: Candle[] = [];
-    try {
-      hourlyCandles = await fetchHourlyCandles(undefined, 730);
-    } catch (e) {
-      warnings.push(`Hourly data unavailable: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    const now = Date.now();
+    const cutoffMs = data.cutoff ? Date.parse(`${data.cutoff}T00:00:00Z`) : Number.POSITIVE_INFINITY;
+    // A 21:00 UTC cutoff conservatively excludes today's still-forming Daily bar.
+    const dailyCandles = dailyResponse.value.filter((c) => c.t <= cutoffMs && c.t + 21 * HOUR_MS <= now);
+    const completedHourly = dropIncomplete(hourlyResponse.value, HOUR_MS, now);
+    if (dailyCandles.length < 50) return emptyResult("insufficient", ["At least 50 completed Daily candles are required."]);
 
-    if (dailyCandles.length < 50) {
-      return emptyResult(["Insufficient historical data for reliable pattern matching."]);
-    }
+    const queryDaily = dailyCandles[dailyCandles.length - 1]!;
+    const queryHourly = completedHourly.filter((c) => c.t < queryDaily.t + DAY_MS);
+    const querySession = alignDailySession(queryDaily, queryHourly);
+    if (!querySession) return emptyResult("insufficient", ["The selected Daily candle does not have 24 exact matching hourly bars. Choose an earlier completed date or retry with more coverage."]);
 
-    // 2 — Feature extraction
+    // Target-session bars are excluded from every matching and projection input.
+    const usableHourly = queryHourly.filter((c) => c.t < querySession.endMs);
     const allFeatures = computeFeatures(dailyCandles);
+    const windowLen = Math.min(data.lookbackCandles, allFeatures.length - 2);
+    if (windowLen < 10) return emptyResult("insufficient", ["The query window is too short for historical matching."]);
+    const queryFeatures = allFeatures.slice(-windowLen);
+    const queryAtr = queryFeatures[queryFeatures.length - 1]!.atr;
+    if (!queryAtr) return emptyResult("insufficient", ["Pre-formation volatility is unavailable for hourly normalization."]);
 
-    // 3 — Build query window from the provided lookback estimate
-    const windowLen = Math.max(10, Math.min(40, data.lookbackCandles));
-    const queryStart = Math.max(0, allFeatures.length - windowLen);
-    const queryFeatures = allFeatures.slice(queryStart);
-
-    // 4 — DTW similarity search
-    const horizonDays = 10;
-    const rawMatches = findTopMatches(queryFeatures, allFeatures, {
-      topN: 30,
+    const dailyMatches = findTopMatches(queryFeatures, allFeatures, {
+      topN: 180,
       band: Math.ceil(windowLen * 0.25),
-      minOutcomeCandles: horizonDays,
+      minOutcomeCandles: 1,
     });
+    const candidates: JointCandidate[] = [];
+    for (const match of dailyMatches) {
+      const formation = dailyCandles[match.patternEndIdx]!;
+      const session = alignDailySession(formation, usableHourly);
+      const atr = allFeatures[match.patternEndIdx]!.atr;
+      if (session && atr) candidates.push({ match, candles: session.candles, atr });
+    }
 
-    // 5 — Measure outcomes
-    const outcomes = measureOutcomes(rawMatches, dailyCandles, {
-      horizonDays,
-      contextDays: 20,
+    const jointMatches = deduplicateJointMatches(
+      rankJointMatches({ candles: querySession.candles, atr: queryAtr }, candidates, windowLen, 80),
       windowLen,
-    });
+    ).slice(0, 40);
+    const measured = measureOutcomes(jointMatches, dailyCandles, { horizonDays: 1, contextDays: 20, windowLen });
+    const enriched: EnrichedMatch[] = [];
+    for (const outcome of measured) {
+      const formation = dailyCandles[outcome.patternEndIdx]!;
+      const nextDaily = dailyCandles[outcome.patternEndIdx + 1]!;
+      const formationSession = alignDailySession(formation, usableHourly);
+      const outcomeSession = alignDailySession(nextDaily, usableHourly);
+      if (!formationSession || !outcomeSession) continue;
+      enriched.push({
+        ...outcome,
+        outcomeStartMs: outcomeSession.startMs,
+        outcomeEndMs: outcomeSession.endMs,
+        hourlyCandles: outcomeSession.candles,
+        contextHourlyCandles: formationSession.candles,
+        patternCandles: dailyCandles.slice(outcome.patternStartIdx, outcome.patternEndIdx + 1),
+        outcomeCandle: nextDaily,
+        sessionStartHourUtc: outcomeSession.startHourUtc,
+      });
+    }
+    if (!enriched.length) return emptyResult("insufficient", ["No non-overlapping historical matches have complete Daily context and a measured 24-hour next session."]);
 
-    // 6 — Summarise
-    const summary = summariseOutcomes(outcomes, horizonDays, 3);
-
-    // 7 — Build a minimal interpretation proxy for scenario descriptions
-    const interpProxy = {
-      trend: data.trend === "bullish" ? "bullish" as const
-        : data.trend === "bearish" ? "bearish" as const
-        : data.trend === "sideways" ? "sideways" as const
-        : "unclear" as const,
-      supportLevels: data.supportLevels,
-      resistanceLevels: data.resistanceLevels,
+    const summary = summariseOutcomes(enriched, 1, 3);
+    const directions: OutcomeDirection[] = ["bull", "bear", "sideways"];
+    const topMatches = directions.flatMap((direction) => enriched
+      .filter((match) => match.direction === direction)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 3));
+    const recent = dailyCandles.slice(-20);
+    const verifiedLevels: VerifiedLevels = {
+      support: [Math.min(...recent.map((c) => c.low))],
+      resistance: [Math.max(...recent.map((c) => c.high))],
+      sma20: recent.reduce((sum, c) => sum + c.close, 0) / recent.length,
     };
-
-    // 8 — Scenarios
-    const scenarios = buildScenarios(summary, interpProxy as Parameters<typeof buildScenarios>[1]);
-
-    // 9 — Enrich top matches with hourly candles
-    const allTopMatches = [
-      ...summary.bull.topMatches,
-      ...summary.bear.topMatches,
-      ...summary.sideways.topMatches,
-    ];
-
-    const topMatches: EnrichedMatch[] = allTopMatches.map((mo) => {
-      const fromMs = mo.patternStartMs - 2 * 86_400_000;
-      const toMs = mo.patternEndMs + horizonDays * 86_400_000;
-      return { ...mo, hourlyCandles: sliceHourly(hourlyCandles, fromMs, toMs) };
+    const scenarios = buildScenarios(summary, {
+      trend: data.trend,
+      supportLevels: verifiedLevels.support,
+      resistanceLevels: verifiedLevels.resistance,
     });
-
-    // 10 — Build 1h projections per direction
-    const currentEntryPrice = dailyCandles[dailyCandles.length - 1]?.close ?? 0;
-    const nowMs = Date.now();
-    const projectedDayStartMs = Math.floor(nowMs / 86_400_000) * 86_400_000 + 86_400_000;
-
     const projections: Record<OutcomeDirection, ScenarioProjection> = {
-      bull: buildProjection(topMatches.filter((m) => m.direction === "bull"), "bull"),
-      bear: buildProjection(topMatches.filter((m) => m.direction === "bear"), "bear"),
-      sideways: buildProjection(topMatches.filter((m) => m.direction === "sideways"), "sideways"),
+      bull: buildProjection(enriched.filter((m) => m.direction === "bull"), "bull"),
+      bear: buildProjection(enriched.filter((m) => m.direction === "bear"), "bear"),
+      sideways: buildProjection(enriched.filter((m) => m.direction === "sideways"), "sideways"),
     };
+    if (enriched.length < 30) warnings.push("Small sample: these are descriptive historical frequencies, not reliable predictive probabilities.");
 
+    const projectedDayStartMs = queryDaily.t + DAY_MS;
     return {
+      status: "ok",
       scenarios,
       summary,
       topMatches,
       projections,
-      currentEntryPrice,
+      currentEntryPrice: queryDaily.close,
+      queryDateMs: queryDaily.t,
       projectedDayStartMs,
-      dailyCandles,
-      hourlyCandles,
+      projectedSessionStartMs: sessionWindow(projectedDayStartMs, querySession.startHourUtc).startMs,
+      dailyCandles: dailyCandles.slice(-60),
+      hourlyCandles: querySession.candles,
+      verifiedLevels,
+      feed: {
+        provider: "Twelve Data",
+        symbol: "XAU/USD",
+        dailyCount: dailyCandles.length,
+        hourlyCount: usableHourly.length,
+        dailyFirstMs: dailyCandles[0]!.t,
+        dailyLastMs: queryDaily.t,
+        hourlyFirstMs: usableHourly[0]!.t,
+        hourlyLastMs: usableHourly[usableHourly.length - 1]!.t,
+        sessionNote: `Daily session ${dateLabel(queryDaily.t)} exactly matches 24 hourly bars beginning at ${String(querySession.startHourUtc).padStart(2, "0")}:00 UTC on the prior date. Forming candles, unaligned sessions and missing bars are excluded.`,
+      },
       analysedAt: new Date().toISOString(),
       warnings,
     };
   });
+
+function dateLabel(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}

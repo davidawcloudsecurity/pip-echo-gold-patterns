@@ -14,6 +14,7 @@ export type OutcomeDirection = "bull" | "bear" | "sideways";
 
 export interface MatchOutcome extends RawMatch {
   direction: OutcomeDirection;
+  entryPrice: number;
   mfe: number; // Maximum Favourable Excursion (%)
   mae: number; // Maximum Adverse Excursion (%)
   netMovePct: number; // Net move over horizon (%)
@@ -83,6 +84,7 @@ export function measureOutcomes(
     outcomes.push({
       ...match,
       direction,
+      entryPrice,
       mfe,
       mae,
       netMovePct,
@@ -107,12 +109,8 @@ export function summariseOutcomes(
     const count = matches.length;
     const pct = total > 0 ? (count / total) * 100 : 0;
 
-    // Sort: bull by best MFE, bear by worst MAE, sideways by smallest |netMove|
-    const sorted = [...matches].sort((a, b) =>
-      dir === "bull" ? b.mfe - a.mfe
-      : dir === "bear" ? a.mae - b.mae
-      : Math.abs(a.netMovePct) - Math.abs(b.netMovePct),
-    );
+    // Outcomes never affect which examples are shown: closest formations first.
+    const sorted = [...matches].sort((a, b) => a.distance - b.distance);
 
     return {
       direction: dir,
