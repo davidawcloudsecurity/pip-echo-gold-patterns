@@ -14,6 +14,7 @@ export type OutcomeDirection = "bull" | "bear" | "sideways";
 
 export interface MatchOutcome extends RawMatch {
   direction: OutcomeDirection;
+  entryPrice: number;
   mfe: number; // Maximum Favourable Excursion (%)
   mae: number; // Maximum Adverse Excursion (%)
   netMovePct: number; // Net move over horizon (%)
