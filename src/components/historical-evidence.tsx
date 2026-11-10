@@ -92,7 +92,7 @@ function ScenarioPanel({ scenario, projection, context, entryPrice, levels }: {
       <text x={x(24)} y={height - 12} fill="currentColor" className="text-muted-foreground" fontSize="10">HISTORICAL RANGE · NOT A FORECAST</text>
     </svg>
     <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-muted-foreground">
-      <span>{projection.matchCount} measured sessions</span><span>Avg favourable {pct(scenario.probability >= 0 ? projection.slots.reduce((s, v) => s + v.avgHigh, 0) / projection.slots.length : 0)}</span><span>Normalised to {price(entryPrice)}</span>
+      <span>{projection.matchCount} measured sessions</span><span>Mean hourly high {pct(projection.slots.reduce((s, v) => s + v.avgHigh, 0) / projection.slots.length)}</span><span>Normalised to {price(entryPrice)}</span>
     </div>
   </div>;
 }
